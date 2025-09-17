@@ -65,6 +65,42 @@ describe('Pokemon Tournament API Integration Tests', () => {
 
       expect(response.body.name).toBe('')
     })
+
+    it("should list all tournaments", async () => {
+        // Create two tournaments first
+        const t1 = await request
+          .post("/tournaments")
+          .send({ name: "Tournament One" })
+          .expect(201);
+        const t2 = await request
+          .post("/tournaments")
+          .send({ name: "Tournament Two" })
+          .expect(201);
+
+        // Call GET /tournaments
+        const response = await request
+          .get("/tournaments")
+          .expect(200);
+
+        expect(Array.isArray(response.body)).toBe(true);
+        expect(response.body.length).toBe(2);
+
+        // Verify structure
+        expect(response.body).toEqual(
+            expect.arrayContaining([
+                expect.objectContaining({
+                    id: t1.body.id,
+                    name: "Tournament One",
+                    createdAt: expect.any(String),
+                }),
+                expect.objectContaining({
+                    id: t2.body.id,
+                    name: "Tournament Two",
+                    createdAt: expect.any(String),
+                }),
+            ])
+        );
+    });
   })
 
   describe('Pokemon Player Management', () => {
