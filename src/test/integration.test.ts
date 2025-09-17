@@ -178,6 +178,59 @@ describe('Pokemon Tournament API Integration Tests', () => {
       const players = Array.from(storage.players.values())
       expect(players.every(p => p.tournamentId === tournamentId)).toBe(true)
     })
+
+        it('should list all players of a tournament', async () => {
+      // Add two players
+      await request
+        .post(`/tournaments/${tournamentId}/players`)
+        .send({ name: 'pikachu' })
+        .expect(201)
+
+      await request
+        .post(`/tournaments/${tournamentId}/players`)
+        .send({ name: 'charizard' })
+        .expect(201)
+
+      // Fetch players via GET
+      const response = await request
+        .get(`/tournaments/${tournamentId}/players`)
+        .expect(200)
+
+      expect(Array.isArray(response.body)).toBe(true)
+      expect(response.body).toHaveLength(2)
+      expect(response.body).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: expect.any(String),
+            name: 'pikachu',
+            tournamentId: tournamentId,
+          }),
+          expect.objectContaining({
+            id: expect.any(String),
+            name: 'charizard',
+            tournamentId: tournamentId,
+          }),
+        ])
+      )
+    })
+
+    it('should return empty array if tournament has no players', async () => {
+      const response = await request
+        .get(`/tournaments/${tournamentId}/players`)
+        .expect(200)
+
+      expect(response.body).toEqual([])
+    })
+
+    it('should return 404 if tournament does not exist', async () => {
+      const response = await request
+        .get('/tournaments/non-existent-id/players')
+        .expect(404)
+
+      expect(response.body).toMatchObject({
+        error: 'Tournament not found'
+      })
+    })
   })
 
   describe('Pokemon API Integration', () => {
