@@ -5,7 +5,11 @@ import { playerRoutes } from './routes/players.ts'
 // TODO for interviewee: Set up the main Fastify server
 
 async function buildServer() {
-  const fastify = Fastify({ logger: true })
+  const fastify = Fastify({
+    logger: {
+      level: 'info', // only info and above
+    },
+  })
   
   // Register routes
   await fastify.register(tournamentRoutes)

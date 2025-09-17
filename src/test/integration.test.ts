@@ -1,8 +1,9 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest'
 import { FastifyInstance } from 'fastify'
 import supertest from 'supertest'
 import { createTestServer, closeTestServer } from './helpers.ts'
 import { storage } from '../storage/index.ts'
+import { clearPokemonCache } from '../routes/players.ts'
 
 describe('Pokemon Tournament API Integration Tests', () => {
   let server: FastifyInstance
@@ -21,6 +22,7 @@ describe('Pokemon Tournament API Integration Tests', () => {
     // Clear storage between tests
     storage.tournaments.clear()
     storage.players.clear()
+    clearPokemonCache()
   })
 
   describe('Health Check', () => {
@@ -341,6 +343,120 @@ describe('Pokemon Tournament API Integration Tests', () => {
         .post(`/tournaments/${tournamentId}/players`)
         .send({ name: 'definitely-not-a-pokemon-name-12345' })
         .expect(400)
+    })
+  })
+
+  describe('Rate Limiting', () => {
+    let tournamentId: string;
+
+    beforeEach(async () => {
+      const tournamentResponse = await request
+        .post('/tournaments')
+        .send({ name: 'Rate Limit Tournament' })
+        .expect(201);
+
+      tournamentId = tournamentResponse.body.id;
+    });
+
+    it('should queue extra Pokemon requests and still succeed', async () => {
+      // Fire 20 add-player requests in parallel
+      const responses = await Promise.all(
+        Array.from({ length: 20 }).map(() =>
+          request
+            .post(`/tournaments/${tournamentId}/players`)
+            .send({ name: 'pikachu' })
+        )
+      );
+
+      // All should succeed (201), just throttled internally
+      responses.forEach((res) => expect(res.status).toBe(201));
+
+      // Verify storage has all 20 players
+      expect(storage.players.size).toBe(20);
+    })
+
+    it('should handle burst requests sequentially (no more than 5 active at once)', async () => {
+      // Warmup: measure single request duration
+      const warmupStart = Date.now();
+      await request
+        .post(`/tournaments/${tournamentId}/players`)
+        .send({ name: 'pikachu' }) // unique
+        .expect(201);
+      const avgSingle = Date.now() - warmupStart;
+
+      const validPokemons = [
+        'bulbasaur', 'ivysaur', 'venusaur',
+        'charmander', 'charmeleon', 'charizard',
+        'squirtle', 'wartortle', 'blastoise',
+        'caterpie', 'metapod', 'butterfree',
+        'weedle', 'kakuna', 'beedrill',
+        'pidgey', 'pidgeotto', 'pidgeot',
+        'rattata', 'raticate'
+      ];
+
+      // Burst: send 20 unique names so no cache kicks in
+      const start = Date.now();
+      const responses = await Promise.all(
+        validPokemons.slice(0, 20).map((poke) =>
+          request
+            .post(`/tournaments/${tournamentId}/players`)
+            .send({ name: poke })
+        )
+      );
+      const elapsed = Date.now() - start;
+
+      // Validate all requests succeeded
+      responses.forEach((res) => expect(res.status).toBe(201));
+
+      // Expected batches: ceil(20 / concurrencyLimit)
+      const concurrencyLimit = 5;
+      const batches = Math.ceil(20 / concurrencyLimit);
+      const expectedMin = avgSingle * batches * 0.8; // allow 20% slack
+
+      expect(elapsed).toBeGreaterThanOrEqual(expectedMin);
+    })
+  })
+
+  describe('Pokemon Cache', () => {
+    let tournamentId: string
+
+    beforeEach(async () => {
+      const tournamentResponse = await request
+        .post('/tournaments')
+        .send({ name: 'Cache Test Tournament' })
+        .expect(201)
+
+      tournamentId = tournamentResponse.body.id
+    })
+
+    it('should use cache for repeated Pokemon lookups', async () => {
+      const fetchSpy = vi.spyOn(global, 'fetch')
+
+      // First request → hits PokeAPI
+      await request
+        .post(`/tournaments/${tournamentId}/players`)
+        .send({ name: 'pikachu' })
+        .expect(201)
+
+      expect(fetchSpy).toHaveBeenCalledTimes(1)
+
+      // Second request with same Pokemon → cache hit, no new fetch
+      await request
+        .post(`/tournaments/${tournamentId}/players`)
+        .send({ name: 'pikachu' })
+        .expect(201)
+
+      expect(fetchSpy).toHaveBeenCalledTimes(1)
+
+      // Third request with different Pokemon → new fetch
+      await request
+        .post(`/tournaments/${tournamentId}/players`)
+        .send({ name: 'charizard' })
+        .expect(201)
+
+      expect(fetchSpy).toHaveBeenCalledTimes(2)
+
+      fetchSpy.mockRestore()
     })
   })
 })

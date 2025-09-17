@@ -1,31 +1,54 @@
 import { FastifyInstance } from "fastify";
 import { pipe } from "fp-ts/lib/function";
-import * as TE from "fp-ts/lib/TaskEither";
-import * as E from "fp-ts/lib/Either";
-import * as O from "fp-ts/lib/Option";
+import * as E from 'fp-ts/lib/Either'
+import * as O from 'fp-ts/lib/Option'
+import * as TE from 'fp-ts/lib/TaskEither'
 import { CreatePlayerRequest, PokemonApiResponse } from "../types/index.ts";
 import { createPlayer, getTournament, getPlayersByTournament } from "../storage/index.ts";
+import { validatePlayerInput } from "../validators";
+import pLimit from "p-limit";
 
-// Validate a pokemon name by calling PokeAPI and returning parsed shape
-const validatePokemon = (name: string): TE.TaskEither<string, PokemonApiResponse> => {
-    const normalized = name.trim().toLowerCase();
-    return TE.tryCatch(
-        async () => {
-            const res = await fetch(`https://pokeapi.co/api/v2/pokemon/${encodeURIComponent(normalized)}`);
-            if (!res.ok) {
-                // Normalize all invalid names into same message
-                throw new Error("Name is not a valid Pokemon");
-            }
-            const json = (await res.json()) as PokemonApiResponse;
-            // Basic structural validation (we rely on PokeAPI contract)
-            if (typeof json.id !== "number" || !Array.isArray(json.types)) {
-                throw new Error("Invalid Pokemon data from API");
-            }
-            return json as PokemonApiResponse;
-        },
-        () => "Name is not a valid Pokemon"
-    );
-};
+const limit = pLimit(5); // max 5 concurrent requests (adjust as needed)
+
+// Simple in-memory cache
+const pokemonCache = new Map<string, PokemonApiResponse>()
+
+export const clearPokemonCache = () => {
+  pokemonCache.clear()
+}
+
+export const validatePokemon = (name: string): TE.TaskEither<string, PokemonApiResponse> => {
+  const normalized = name.trim().toLowerCase()
+
+  return TE.tryCatch(
+    async () => {
+      // ✅ Check cache first
+      if (pokemonCache.has(normalized)) {
+        return pokemonCache.get(normalized)!
+      }
+
+      // ✅ Rate limited API call
+      return await limit(async () => {
+        const res = await fetch(`https://pokeapi.co/api/v2/pokemon/${encodeURIComponent(normalized)}`)
+        if (!res.ok) {
+          throw new Error("Name is not a valid Pokemon")
+        }
+
+        const json = (await res.json()) as PokemonApiResponse
+
+        // Basic structural validation
+        if (typeof json.id !== "number" || !Array.isArray(json.types)) {
+          throw new Error("Invalid Pokemon data from API")
+        }
+
+        // ✅ Store in cache
+        pokemonCache.set(normalized, json)
+        return json
+      })
+    },
+    () => "Name is not a valid Pokemon"
+  )
+}
 
 export async function playerRoutes(fastify: FastifyInstance) {
     fastify.post<{
@@ -33,12 +56,11 @@ export async function playerRoutes(fastify: FastifyInstance) {
         Body: CreatePlayerRequest;
     }>("/tournaments/:tournamentId/players", async (request, reply) => {
         const tournamentId = request.params.tournamentId;
-        const body = request.body;
-
-        // Validate request body
-        if (!body || typeof body.name !== "string" || body.name.trim().length === 0) {
-            return reply.status(400).send({ error: "Player name is required" });
+        const validation = validatePlayerInput(request.body);
+        if (!validation.ok) {
+            return reply.status(400).send({ error: validation.errorMessage });
         }
+        const body = validation.value;
 
         // Validate tournament exists
         const tournamentOpt = getTournament(tournamentId);
