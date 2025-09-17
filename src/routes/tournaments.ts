@@ -8,7 +8,7 @@ export async function tournamentRoutes(fastify: FastifyInstance) {
     // Create tournament
     fastify.post<{ Body: CreateTournamentRequest }>("/tournaments", async (request, reply) => {
         const body = request.body;
-        if (!body || typeof body.name !== "string" || body.name.trim().length === 0) {
+        if (!body || typeof body.name !== "string") {
             return reply.status(400).send({ error: "Tournament name is required" });
         }
 
